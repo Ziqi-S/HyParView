@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyparview-sim"
+version = "0.2.0"
+description = "Deterministic Python research simulation of HyParView"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+hyparview-demo = "demo:main"
+hyparview-experiments = "experiments:main"
+
+[tool.setuptools]
+py-modules = ["demo", "experiments"]
+
+[tool.setuptools.packages.find]
+include = ["hyparview*"]
+namespaces = false
