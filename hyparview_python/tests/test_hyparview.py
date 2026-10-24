@@ -73,11 +73,11 @@ class ProtocolTests(unittest.TestCase):
         a = s.add("a", Config(passive_size=2))
         a.passive.update({"b", "c"})
         a._shuffles = {1: ("b",), 2: ("c",)}
-        a.receive("x", Message("SHUFFLE_REPLY", sample=("d",), request_id=2))
+        a.receive("x", Message("SHUFFLE_REPLY", sample_ids=("d",), request_id=2))
         self.assertEqual(a.passive, {"b", "d"})
-        a.receive("y", Message("SHUFFLE_REPLY", sample=("e",), request_id=1))
+        a.receive("y", Message("SHUFFLE_REPLY", sample_ids=("e",), request_id=1))
         self.assertEqual(a.passive, {"d", "e"})
-        a.receive("y", Message("SHUFFLE_REPLY", sample=("z",), request_id=1))
+        a.receive("y", Message("SHUFFLE_REPLY", sample_ids=("z",), request_id=1))
         self.assertEqual(a.passive, {"d", "e"})
 
     def test_shuffle_reply_expires(self):
@@ -85,7 +85,7 @@ class ProtocolTests(unittest.TestCase):
         a = s.add("a")
         a._shuffles[1] = ()
         a.maintenance()
-        a.receive("x", Message("SHUFFLE_REPLY", sample=("y",), request_id=1))
+        a.receive("x", Message("SHUFFLE_REPLY", sample_ids=("y",), request_id=1))
         self.assertNotIn("y", a.passive)
 
     def test_crash_detected_on_tick_and_replaced(self):

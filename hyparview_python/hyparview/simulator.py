@@ -17,6 +17,8 @@ from .simulation.metrics import collect_metrics
 class Simulator:
     """Ideal simulation environment: reliable delivery, lifecycle and statistics.
 
+    Implements the Network interface (network.py) that every Node talks to.
+
     Connection rules live only in Node.connect/disconnect (node.py).
 
     No latency, packet loss, concurrency or false suspicions. Crash knowledge is
@@ -53,21 +55,29 @@ class Simulator:
             node.join(contact)
         return node
 
-    def get_live_node(self, node_id: str) -> Node | None:
-        """按已知 ID 联系节点；不向调用者提供未知联系人。"""
+    # --- Network interface used by Node (see network.py) ---
+
+    def lookup(self, node_id: str) -> Node | None:
+        """Find a live node by ID in all alive nodes, incl. active and passive view or None if unreachable."""
         return self.nodes[node_id] if node_id in self.alive else None
 
-    def _count(self, source: str, kind: str):
+    # TODO：记录这个有啥用？
+    def record(self, source: str, kind: str):
         """只记录控制消息次数，不执行协议操作。"""
         self.sent[kind] += 1
         self.sent_by_node[source] += 1
 
-    def send(self, source: str, target: str, message: Message):
+    # TODO：记录这个有啥用？
+    def record_drop(self, kind: str):
+        self.dropped[kind] += 1
+
+    def send(self, from_id: str, to_id: str, message: Message):
         """将消息加入可靠 FIFO 队列；不设置丢包率或网络延迟。"""
-        if source not in self.alive:
+        if from_id not in self.alive:
             return
-        self._count(source, message.kind)
-        self.queue.append((source, target, message))
+        self.record(from_id, message.kind)
+        #TODO:要不要计算data_sent_by_node？如果要计算，应该在这里加上
+        self.queue.append((from_id, to_id, message))#TODO：这里的消息是直接加入队列的，没经过网络传输
 
     def schedule_repair(self, source: str, *, urgent: bool = True):
         if source not in self.alive:
@@ -81,12 +91,13 @@ class Simulator:
             self.queue.append((source, source, Message("_REPAIR")))
 
 
-    def probe(self, source: str, target: str) -> bool:
-        self._count(source, "PING")
+    def pingpong_probe(self, source: str, target: str) -> bool:
+        """True if target is reachable; otherwise record a dropped PING and return False."""
+        self.record(source, "PING")
         if target in self.alive:
-            self._count(target, "PONG")
+            self.record(target, "PONG")
             return True
-        self.dropped["PING"] += 1
+        self.record_drop("PING")
         return False
 
     def drain(self, max_events: int = 1_000_000):
@@ -113,7 +124,7 @@ class Simulator:
                 # A transport event on an existing connection, not a global
                 # membership notification and not a transmitted packet.
                 if source in self.alive:
-                    self.nodes[source].link_down(target, alive=False)
+                    self.nodes[source].handle_peer_disconnection(target, alive=False)
                 continue
             if message.kind == "_REPAIR":
                 self._repair_pending.discard(source)
@@ -127,9 +138,9 @@ class Simulator:
                         self._repair_deferred.add(source)
                 continue
             if source not in self.alive or target not in self.alive:
-                self.dropped[message.kind] += 1
+                self.record_drop(message.kind)
                 if source in self.alive and target not in self.alive:
-                    self.nodes[source].link_down(target, alive=False)
+                    self.nodes[source].handle_peer_disconnection(target, alive=False)
                 continue
             self.nodes[target].receive(source, message)
 
@@ -142,7 +153,7 @@ class Simulator:
             order = sorted(self.alive)
             self.rng.shuffle(order)
             for node_id in order:
-                self.nodes[node_id].maintenance(probe_active=probe_active,
+                self.nodes[node_id].maintenance(probe_active_view=probe_active,
                                                 fill=fill)
             self.drain()
             self.check()

@@ -9,23 +9,24 @@ from .config import Config
 from .messages import Message
 
 if TYPE_CHECKING:
-    from .simulator import Simulator
+    from .network import Network
 
 
 class Node:
     """Local protocol state and complete ideal connection operations.
 
     Peers are chosen only from local views or an explicitly known contact.
-    Simulator.get_live_node resolves a known address; it never supplies peers.
+    All outside contact goes through self.network (see network.py): lookup
+    resolves a known address; it never supplies peers.
     All choices sort IDs first so seeded runs survive Python hash randomization.
     """
 
-    def __init__(self, node_id: str, simulator: Simulator,
+    def __init__(self, node_id: str, network: Network,
                  config: Config | None = None, seed: int = 0):
         if not isinstance(node_id, str) or not node_id:
             raise ValueError("Node ID must be a nonempty string")
         self.id = node_id
-        self.simulator = simulator
+        self.network = network
         self.config = config or Config()
         self.active: set[str] = set()
         self.passive: set[str] = set()
@@ -34,150 +35,149 @@ class Node:
         self._sequence = 0 #本节点shuffle次数计数器
         self._shuffles: dict[int, tuple[str, ...]] = {} #记录“某次 shuffle 发出去了哪些节点”
 
-    def sample(self, peers, count: int) -> list[str]:
-        population = sorted(peers) #先排序，保证可复现性
-        return self.rng.sample(population, min(count, len(population)))
+    def sample(self, peer_ids: set[str], count: int) -> list[str]:
+        """从 peers 中随机选择 count 个节点"""
+        neighbors = sorted(peer_ids) #先排序，保证可复现性
+        return self.rng.sample(neighbors, min(count, len(neighbors)))
 
-    #add single node
-    def add_passive(self, peer: str, preferred: list[str] | None = None):
-        if (peer == self.id or peer in self.active or peer in self.passive
+    def add_passive(self, peer_id: str, exported: list[str] | None = None):
+        """Add a peer to the passive view, evicting an existing peer if necessary."""
+        if (peer_id == self.id or peer_id in self.active or peer_id in self.passive
                 or self.config.passive_size == 0):
             return
-        if len(self.passive) >= self.config.passive_size:
-            # First replace peers exported in THIS shuffle; then random peers.
-            candidates = [p for p in (preferred or []) if p in self.passive]
+        if len(self.passive) == self.config.passive_size: # passive view is full
+            # Quotation: A node will first attempt to remove identifiers sent to the peer. 意味着不需要disconnect()
+            # If no such identifiers remain in the passive view, it will remove identifiers at random.
+            candidates = [p for p in (exported or []) if p in self.passive] #TODO: exported改为从self._shuffles观察？
             victim = candidates[0] if candidates else self.sample(self.passive, 1)[0]
             self.passive.remove(victim)
-        self.passive.add(peer)
 
-    #merge a list of nodes
-    def merge_passive(self, peers, exported=()):
-        preferred = list(exported)
-        for peer in peers:
-            self.add_passive(peer, preferred)
+        self.passive.add(peer_id)
 
-    def accepts(self, peer: str, high: bool) -> bool:
-        return peer != self.id and (peer in self.active or high
-                                    or len(self.active) < self.config.active_size)
+    def merge_passive(self, peers_id, received=()):
+        """Merge a list of peers into the passive view."""
+        for peer_id in peers_id:
+            self.add_passive(peer_id, list(received))
+
+    def accepts(self, peer_id: str, high: bool) -> bool:
+        """Check if a peer can be accepted into the active view."""
+        if peer_id == self.id:
+            return False
+        if peer_id in self.active:
+            return True  #already linked
+
+        # High priority is always accepted (call make_room if full);
+        # low priority only if there is a free slot.
+        return high or len(self.active) < self.config.active_size
 
     def make_room(self):
-        if len(self.active) >= self.config.active_size:
+        """Remove a random active neighbor to make room for a new one."""
+        if len(self.active) == self.config.active_size:
             self.disconnect(self.sample(self.active, 1)[0])
 
-    def link_up(self, peer: str):
-        """只更新本节点；connect 已检查容量并在必要时调用 make_room。"""
-        self.passive.discard(peer)
-        if peer not in self.active:
-            self.active.add(peer) # 容量检查统一在 connect 中完成
-            self.events.append(("up", peer))
+    def move_up(self, peer_id: str):
+        """Add a peer from the passive view to the active view.
+        建立 active 连接是双向的，要双方都同意才能成立。容量检查和淘汰旧邻居都要等双方都表态之后才能做，所以不适合放进单边的 move_up()。
+        """
+        self.passive.discard(peer_id)
+        if peer_id not in self.active:
+            self.active.add(peer_id) # 容量检查统一在 connect 中完成
+            self.events.append(("up", peer_id))
 
-    def link_down(self, peer: str, alive: bool, *, recover: bool = True): #*表示recover必须通过关键字传递
-        """只更新本节点；alive 表示该邻居是否仍可作为备用地址。
-
+    def handle_peer_disconnection(self, peer_id: str, alive: bool, *, recover: bool = True): #*表示recover必须通过关键字传递
+        """ Move a peer from the active view to the passive view, or remove it entirely.
+        只更新本节点；alive 表示该邻居是否仍可作为备用地址。
         收到断连通知或发现邻居失效时使用；完整双向断连调用 disconnect。
         """
-        was_active = peer in self.active
-        if peer in self.active:
-            self.active.remove(peer)
-            self.events.append(("down", peer))
-        self.passive.discard(peer) #discard()不会报错，即使peer不在passive中
+        is_active = peer_id in self.active
+
+        if is_active:
+            self.active.remove(peer_id)
+            self.events.append(("down", peer_id))
+
+        self.passive.discard(peer_id)
+
         if alive:
-            self.add_passive(peer)
-        if was_active and recover:
+            self.add_passive(peer_id)
+
+        if is_active and recover:
             # Section 4.3 treats incoming disconnections as recovery triggers.
             # A local eviction to make room suppresses its own recovery.
-            self.simulator.schedule_repair(self.id, urgent=not alive)
+            self.network.schedule_repair(self.id, urgent=not alive)
 
-    def connect(self, peer: str, high: bool = False) -> bool:
-        """完整建立一条双向边：检查双方容量、必要时淘汰、更新双方视图。
-
+    def connect(self, peer_id: str, high: bool = False) -> bool:
+        """ add each other to their active view, possibly evicting an existing peer.
+        peer_id从self.passive里来
+        完整建立一条双向边：检查双方容量、必要时淘汰、更新双方视图。
         这是理想仿真中的一次原子操作。成功返回 True；存活但拒绝或
         节点已退出时返回 False，后者会从本地备用视图删除。
         """
-        simulator = self.simulator
-        if peer == self.id or simulator.get_live_node(self.id) is None:
+        network = self.network
+        neighbor = network.lookup(peer_id)  # 在所有存活peers中查找peer_id对应的节点对象
+
+        if peer_id == self.id or network.lookup(self.id) is None:
             return False
-        simulator._count(self.id, "NEIGHBOR_HIGH" if high else "NEIGHBOR_LOW")
-        neighbor = simulator.get_live_node(peer)
-        if neighbor is None:
-            simulator.dropped["NEIGHBOR"] += 1
-            self.link_down(peer, alive=False)
+
+        network.record(self.id, "NEIGHBOR_HIGH" if high else "NEIGHBOR_LOW")#TODO：有必要记录吗？如果neighbor不存在，记录的意义是？
+
+        if neighbor is None: #可能存在但是已经退出了，也有可能不存在
+            network.record_drop("NEIGHBOR") #TODO：有必要记录吗？
+            self.handle_peer_disconnection(peer_id, alive=False)#不需要recover，因为neighbor已经退出了
             return False
 
         # 双方都遵守各自的连接上限；high 允许随机淘汰旧邻居。
-        accepted = neighbor.accepts(self.id, high) and self.accepts(peer, high)
-        simulator._count(peer, "NEIGHBOR_ACK" if accepted else "NEIGHBOR_REJECT")
+        accepted = neighbor.accepts(self.id, high) and self.accepts(peer_id, high)
         if not accepted:
+            network.record(peer_id, "NEIGHBOR_REJECT")
             return False
-        if peer not in self.active:
+        else:
+            network.record(peer_id, "NEIGHBOR_ACK")
+
+        # 如果neighbor已经在active中，为什么还需要connect()？可能是因为neighbor在active中，但是本节点不在neighbor的active中，所以需要connect()来建立双向连接。
+        if peer_id not in self.active:
             self.make_room()
         if self.id not in neighbor.active:
             neighbor.make_room()
-        self.link_up(peer)
-        neighbor.link_up(self.id)
+        self.move_up(peer_id)
+        neighbor.move_up(self.id)
+
         return True
 
-    def disconnect(self, peer: str, *, leaving: bool = False):
+    def disconnect(self, peer_id: str, *, leaving: bool = False):
         """完整断开一条双向边；leaving=True 表示本节点主动离开。
-
         本地为腾出空位而断开时不立即修复；接收断连通知的邻居排队修复。
         """
-        simulator = self.simulator
-        simulator._count(self.id, "DISCONNECT")
-        neighbor = simulator.get_live_node(peer)
-        self.link_down(peer, alive=neighbor is not None, recover=False)
+        network = self.network
+        network.record(self.id, "DISCONNECT")
+        neighbor = network.lookup(peer_id)
+
         if neighbor is not None:
-            neighbor.link_down(self.id, alive=not leaving)
+            self.handle_peer_disconnection(peer_id, alive=True, recover=False)
+            neighbor.handle_peer_disconnection(self.id, alive=not leaving)
         else:
-            simulator.dropped["DISCONNECT"] += 1
+            network.record_drop("DISCONNECT")
 
+    #TODO: neighbor request?
     def join(self, contact: str):
+        """Join the network via a known contact node.
+        # 这里的 JOIN 消息是单向的，contact 节点收到后会把新节点加入自己的 active，然后再发 FORWARD_JOIN 给自己的其他 active 节点。
+        # 新节点自己不会直接加入 active，而是等待 contact 节点的 FORWARD_JOIN 消息。
+        """
         if contact != self.id:
-            self.simulator.send(self.id, contact, Message("JOIN"))
-
-    # 按随机顺序尝试备用节点，直到补满 active 或候选耗尽。
-    def repair(self):
-        """Bounded candidate sweep, retaining peers that reject low priority.
-
-        A failed active connection schedules this operation immediately in the
-        event queue. Visit each candidate at most once so refusals cannot loop.
-        试图填补active views的空缺。每个候选节点最多访问一次，以避免拒绝循环。
-        """
-        for peer in self.sample(self.passive, len(self.passive)):
-            if len(self.active) >= self.config.active_size:
-                break
-            self.connect(peer, high=not self.active)
-
-    def maintenance(self, *, probe_active: bool = True, fill: bool = False):
-        """
-            1. 检查活跃邻居是否在线。
-            2. 清除未完成的旧 shuffle 请求记录。
-            3. 发起新的 shuffle。
-
-            probe_active=True, 会通过 PING/PONG 检查所有活跃邻居。这个定时探测是代码加入的模拟策略，不应该直接当作论文中的消息机制。
-            fill=True 时，节点会在维护过程中尝试填充其活跃邻居列表，以确保其活跃邻居数量达到配置的上限。
-        """
-        # Optional keepalives are a simulation policy, not a paper message.
-        if probe_active:
-            for peer in sorted(self.active):
-                if not self.simulator.probe(self.id, peer):
-                    self.link_down(peer, alive=False)
-        # Simulator drains each round: unanswered requests expire next tick.
-        self._shuffles.clear()
-        if fill:
-            self.simulator.schedule_repair(self.id)
-        self.shuffle()
+            self.network.send(self.id, contact, Message("JOIN"))
 
     #TODO: 需要return值吗？
     def shuffle(self) -> int | None:
+        """发起一次 shuffle，返回请求 ID 或 None（没有活跃邻居）。"""
         if not self.active: # No active peers to shuffle with
             return None
+
         target = self.sample(self.active, 1)[0] #随机选择这一跳的活跃邻居作为 shuffle 的目标节点
         exported = tuple(self.sample(self.passive, self.config.k_p)) #随机选择 k_p 个被动邻居作为 shuffle 的导出节点
         sample = (self.id, *self.sample(self.active, self.config.k_a), *exported) #*是展开
         self._sequence += 1 #每次 shuffle 都会增加计数器
         self._shuffles[self._sequence] = exported
-        self.simulator.send(self.id, target, Message(
+        self.network.send(self.id, target, Message(
             "SHUFFLE", self.id, self.config.shuffle_ttl, sample, self._sequence))
         return self._sequence
 
@@ -207,7 +207,7 @@ class Node:
 
         # 2. 给接纳后 active 中除新节点外的所有节点发送 FORWARD_JOIN。
         for peer in sorted(self.active - {new_node}):
-            self.simulator.send(self.id, peer, Message(
+            self.network.send(self.id, peer, Message(
                 kind="FORWARD_JOIN", origin=new_node, ttl=self.config.arwl))
 
     def _receive_forward_join(self, sender: str, message: Message):
@@ -227,35 +227,63 @@ class Node:
 
         # 3. 继续游走时减一。ARWL 的约束已经由剩余 TTL 传递下来了。
         next_hop = self.sample(choices, 1)[0]
-        self.simulator.send(self.id, next_hop,
+        self.network.send(self.id, next_hop,
                             replace(message, ttl=remaining_ttl - 1))
 
     def _receive_shuffle(self, sender: str, message: Message):
         choices = self.active - {sender}
         remaining_ttl = message.ttl - 1  # section 4.4：与 FORWARD_JOIN 不同，先减一
         if remaining_ttl > 0 and len(self.active) > 1 and choices:
-            self.simulator.send(self.id, self.sample(choices, 1)[0],
+            self.network.send(self.id, self.sample(choices, 1)[0],
                                 replace(message, ttl=remaining_ttl))
         else:
             # 无下一跳时也执行交换；先选回复，再合并收到的地址。
-            reply = tuple(self.sample(self.passive, len(message.sample)))
-            self.simulator.send(self.id, message.origin, Message(
-                "SHUFFLE_REPLY", sample=reply, request_id=message.request_id))
-            self.merge_passive(message.sample, reply)
+            reply = tuple(self.sample(self.passive, len(message.sample_ids)))
+            self.network.send(self.id, message.origin, Message(
+                "SHUFFLE_REPLY", sample_ids=reply, request_id=message.request_id))
+            self.merge_passive(message.sample_ids, reply)
 
     def _receive_shuffle_reply(self, message: Message):
         exported = self._shuffles.pop(message.request_id, None) # 弹出已发送的 shuffle 请求
         if exported is not None:
-            self.merge_passive(message.sample, exported)
+            self.merge_passive(message.sample_ids, exported)
+
+    # 按随机顺序尝试备用节点，直到补满 active 或候选耗尽。
+    def repair(self):
+        """ Fill the active view from the passive view, if possible."""
+        for peer in self.sample(self.passive, len(self.passive)):
+            if len(self.active) == self.config.active_size:
+                break
+            self.connect(peer, high=not self.active)  # 如果active为空，则high=True，保证至少有一个active neighbor
+
+    def maintenance(self, *, probe_active_view: bool = True, fill: bool = False):
+        """
+            1. 检查活跃邻居是否在线。
+            2. 清除未完成的旧 shuffle 请求记录。
+            3. 发起新的 shuffle。
+
+            probe_active_view=True, 会通过 PING/PONG 检查所有活跃邻居。这个定时探测是代码加入的模拟策略，不应该直接当作论文中的消息机制。
+            fill=True 时，节点会在维护过程中尝试填充其活跃邻居列表，以确保其活跃邻居数量达到配置的上限。
+        """
+
+        if probe_active_view:
+            for peer in sorted(self.active):
+                if not self.network.pingpong_probe(self.id, peer):
+                    self.handle_peer_disconnection(peer, alive=False)
+        # The simulator drains each round: unanswered requests expire next tick.
+        self._shuffles.clear() #TODO:检查必要性
+        if fill:
+            self.network.schedule_repair(self.id)
+        self.shuffle()
 
     def set_active_size(self, size: int):
-        """Experimental bound change: shrink now, queue refill on enlargement."""
+        """shrink now, queue refill on enlargement."""
         previous = self.config.active_size
         self.config = replace(self.config, active_size=size)
         while len(self.active) > size:
             self.disconnect(self.sample(self.active, 1)[0])
         if size > previous:
-            self.simulator.schedule_repair(self.id)
+            self.network.schedule_repair(self.id)
 
     def check_local(self):
         assert self.id not in self.active | self.passive

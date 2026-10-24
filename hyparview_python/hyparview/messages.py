@@ -10,6 +10,6 @@ class Message:
     origin: str = ""
     #sender: str = "" #TODO: 这个字段需要吗? --> 通过receive(sender, message)传入
     ttl: int = 0
-    sample: tuple[str, ...] = () # 本次消息携带的node_id
+    sample_ids: tuple[str, ...] = () # 本次消息携带的node_id
     request_id: int = 0
 

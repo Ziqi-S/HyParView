@@ -105,19 +105,19 @@ class PaperProtocolTests(unittest.TestCase):
         node, observations = self.local_node(
             active=("sender", "other"), passive=("p", "q"))
         node.receive("sender", Message(
-            "SHUFFLE", "origin", ttl=1, sample=("origin", "new"),
+            "SHUFFLE", "origin", ttl=1, sample_ids=("origin", "new"),
             request_id=7))
         self.assertEqual(len(observations.sent), 1)
         _, target, reply = observations.sent[0]
         self.assertEqual((target, reply.kind, reply.request_id),
                          ("origin", "SHUFFLE_REPLY", 7))
-        self.assertEqual(set(reply.sample), {"p", "q"})
+        self.assertEqual(set(reply.sample_ids), {"p", "q"})
         self.assertTrue({"origin", "new"} <= node.passive)
 
     def test_shuffle_ttl_two_forwards_with_remaining_ttl_one(self):
         node, observations = self.local_node(active=("sender", "other"))
         node.receive("sender", Message(
-            "SHUFFLE", "origin", ttl=2, sample=("new",), request_id=8))
+            "SHUFFLE", "origin", ttl=2, sample_ids=("new",), request_id=8))
         _, target, forwarded = observations.sent[0]
         self.assertEqual((target, forwarded.kind, forwarded.ttl),
                          ("other", "SHUFFLE", 1))
@@ -126,14 +126,14 @@ class PaperProtocolTests(unittest.TestCase):
     def test_shuffle_degree_one_terminates_after_sender_was_evicted(self):
         node, observations = self.local_node(active=("other",))
         node.receive("old_sender", Message(
-            "SHUFFLE", "origin", ttl=6, sample=("new",), request_id=9))
+            "SHUFFLE", "origin", ttl=6, sample_ids=("new",), request_id=9))
         self.assertEqual(observations.sent[0][1], "origin")
         self.assertEqual(observations.sent[0][2].kind, "SHUFFLE_REPLY")
 
     def test_shuffle_random_walk_can_return_to_origin(self):
         node, observations = self.local_node(active=("sender", "origin"))
         node.receive("sender", Message(
-            "SHUFFLE", "origin", ttl=2, sample=("new",), request_id=10))
+            "SHUFFLE", "origin", ttl=2, sample_ids=("new",), request_id=10))
         self.assertEqual(observations.sent[0][1], "origin")
         self.assertEqual(observations.sent[0][2].kind, "SHUFFLE")
 

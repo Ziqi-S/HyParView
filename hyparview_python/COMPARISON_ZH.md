@@ -54,7 +54,7 @@ Go [README](https://github.com/hashicorp/hyparview/blob/78300343c5e317836f18470f
 
 修复通过 FIFO 本地工作执行。每次外部发起的 drain 中，每节点至多执行一次普通修复扫描；已执行的紧急扫描也占用普通扫描预算。再次由存活 DISCONNECT 触发的普通修复延后到下一次外部 drain（JOIN、广播或 membership cycle）。失败联系触发的紧急扫描仍立即有资格执行，各扫描只尝试有限候选。这个调度限额是本版模拟选择，用于避免 active 上限为 1 时高优先级连接持续互相挤出；不是论文规定的限额。
 
-`Node.connect` / `Node.disconnect` 是完整连接操作的唯一实现，包含接受判断、随机淘汰和双端视图更新；Simulator 没有重复的连接规则。`link_up` / `link_down` 只是内部记账辅助。Simulator 的 `get_live_node(known_id)` 查询已知地址，不给 Node 提供完整成员表或新联系人。可选的周期 probe 是额外探测策略，不是论文必需的周期消息。
+`Node.connect` / `Node.disconnect` 是完整连接操作的唯一实现，包含接受判断、随机淘汰和双端视图更新；Simulator 没有重复的连接规则。`move_up` / `link_down` 只是内部记账辅助。Node 只通过 `Network` 接口接触外部；Simulator 的 `lookup(known_id)` 查询已知地址，不给 Node 提供完整成员表或新联系人。可选的周期 probe 是额外探测策略，不是论文必需的周期消息。
 
 本版不模拟包时延或随机丢包；FIFO 队列保持稳定执行顺序，request ID 关联 shuffle 交换。`dropped` 只记录端点死亡导致的失败尝试。连接作为串行原子操作完成，不能用此模型测量真实网络时延或握手竞争。
 

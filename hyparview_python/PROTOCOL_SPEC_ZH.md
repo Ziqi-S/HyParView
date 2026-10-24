@@ -36,7 +36,7 @@ active_size 至少为 1；大小、样本数和 TTL 是非负整数；PRWL≤ARW
 
 `Node.connect` 是接受判断、双方容量检查、随机淘汰和双端视图更新的唯一实现：接受返回 True；存活但拒绝或不可达返回 False。存活但拒绝的候选保留，不可达地址从本地视图删除。成功者从两端 passive 中删除。`Node.disconnect` 统一执行完整断连；`link_up` / `link_down` 仅辅助更新视图和事件，不是另一套连接实现。ACK/REJECT 在消息开销中计数，连接操作为串行原子操作。
 
-Node 直接引用具体 Simulator。Simulator 没有另一套 connect / disconnect；它提供 `send`、存活探测、事件处理、crash / leave、修复调度、计数及测量入口。`get_live_node(known_id)` 仅按已知地址查询投递目标，不会返回完整成员表或替节点选择未知备用地址。
+Node 只依赖 `Network` 接口（network.py），Simulator 实现该接口。Simulator 没有另一套 connect / disconnect；它提供 `send`、存活探测、事件处理、crash / leave、修复调度、计数及测量入口。`lookup(known_id)` 仅按已知地址查询投递目标，不会返回完整成员表或替节点选择未知备用地址。
 
 本版不模拟时延或随机丢包。FIFO 队列保持稳定事件顺序，shuffle request ID 关联各次交换；`dropped` 只统计端点死亡导致的失败消息 / 操作尝试。
 

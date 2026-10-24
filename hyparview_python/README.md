@@ -1,10 +1,12 @@
 # HyParView Python 仿真重实现
 
-按导师要求提供仿真实现，Python 3.10+，运行时只用标准库。协议行为依据 Leitão 等人（2007）的论文 §4 和 Algorithm 1，参考 HashiCorp 的 Go 实现及 sile 的 Rust 实现，独立编写 Python 代码。上游固定版本、源码差异与取舍见 [COMPARISON_ZH.md](COMPARISON_ZH.md)，逐项论文映射见 [PROTOCOL_SPEC_ZH.md](PROTOCOL_SPEC_ZH.md)。
+Python 3.10+，运行时只用标准库。协议行为依据 Leitão 等人（2007）的论文 §4 和 Algorithm 1，参考 HashiCorp 的 Go 实现及 sile 的 Rust 实现，独立编写 Python 代码。上游固定版本、源码差异与取舍见 [COMPARISON_ZH.md](COMPARISON_ZH.md)，逐项论文映射见 [PROTOCOL_SPEC_ZH.md](PROTOCOL_SPEC_ZH.md)。
 
 实现包括有界、对称的 active view，备用 passive view，JOIN / FORWARD_JOIN，带优先级的 NEIGHBOR 接受与拒绝，DISCONNECT，周期 shuffle，以及发送失败触发的即时修复。节点只知道本地地址，模拟器的全局表用于投递与测量。
 
 ## 运行
+
+容量自适应论文方向的研究方案见 [THESIS_PLAN_ZH.md](THESIS_PLAN_ZH.md)，第一组实际结果和图形见 [CAPACITY_PILOT_ZH.md](CAPACITY_PILOT_ZH.md)。独立实验入口为 `python3 -m hyparview.experiments.capacity`，已知 CPU/RAM 的本地映射在 `hyparview/capacity.py`；该实验比较固定、资源匹配、随机错配及资源变化后的调整。仿真仍只用标准库，绘图可选安装 `python3 -m pip install '.[plots]'`，再运行 `python3 -m hyparview.experiments.plot_capacity`。原有重实现与实验入口继续保留。
 
 进入项目目录后，无需安装依赖：
 
@@ -80,7 +82,7 @@ tests/                   # 协议、仿真及实验工具测试
 4. `hyparview/simulation/metrics.py`、`hyparview/simulation/broadcast.py`：看图测量与应用广播。
 5. `hyparview/experiments/runner.py`：最后看实验如何组织；统计方法在同目录 `statistics.py`，单次演示在 `demo.py`。
 
-常用导入为 `from hyparview import Config, Message, Node, Simulator, __version__`。Node 直接引用具体 Simulator；Simulator 负责环境操作，连接规则集中在 Node。`get_live_node(known_id)` 只查询已知地址，不能给节点发现未知成员。根目录 `demo.py` 和 `experiments.py` 保留原来的导入接口及命令行入口，上面的运行命令继续适用。
+常用导入为 `from hyparview import Config, Message, Network, Node, Simulator, __version__`。Node 只依赖 `hyparview/network.py` 中的最小 `Network` 接口（`lookup`、`send`、`probe`、`schedule_repair`、`record`、`record_drop`），Simulator 是它的一种实现；连接规则集中在 Node。`lookup(known_id)` 只查询已知地址，不能给节点发现未知成员。单元测试可传入假网络直接测试 Node，示例见 `tests/test_node_unit.py`。根目录 `demo.py` 和 `experiments.py` 保留原来的导入接口及命令行入口，上面的运行命令继续适用。
 
 Simulator 是实验环境：登记节点、投递排队消息、调度恢复并记录计数，方便在一个进程里运行许多 Node。它不是 HyParView 协议要求节点必须拥有的组件，也不代表真实网络。
 

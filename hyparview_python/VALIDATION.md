@@ -1,5 +1,33 @@
 # 验证记录
 
+## 2026-10-18（续）：Node 只依赖 Network 接口
+
+- 新增 `hyparview/network.py`：`lookup`、`send`、`probe`、`schedule_repair`、`record`、`record_drop`。`Node.simulator` 改为 `Node.network`；Node 不再调用 Simulator 的私有方法或直接修改其 `dropped` 计数。Simulator 的 `get_live_node` / `_count` 改名为 `lookup` / `record`。
+- 补全 `Message.sample` → `sample_ids` 改名在 node.py 与测试中的引用。
+- 新增 `tests/test_node_unit.py`：用约 30 行的假网络直接测试 Node，不启动 Simulator。95 项测试全部通过。
+- 协议决策与随机数消耗未变：容量 pilot JSON、原实验 runner（N=200，种子 0、1）与 demo 输出均与重构前逐字节相同。
+
+## 2026-10-18（续）：图性质、敏感性入口与两张新图
+
+- 新增只读 `simulation.metrics.graph_properties`：capacity–degree Pearson / Spearman、度同配性、能力组混合比例、割点与桥（迭代 Tarjan）。在测量窗口及故障前后快照中保存；新增广播深度（最后首次投递跳数）。
+- 容量实验新增 `--resource-mix {proportional,decoupled}` 与 `--failure-detection {on_send,connection}`；JSON `schema_version` 升为 2。默认运行的数值与此前 pilot 完全一致（新增指标不消耗协议随机数）。
+- 绘图新增图 4（结构）和图 5（50% 故障后的时间过程），已视觉检查。
+- 91 项测试全部通过（新增 5 项：星形 / 环 / 路径与空图的结构性质、新选项与非法参数）。
+- 已运行 decoupled 与 connection 两组敏感性（N=120，种子 0–4）。decoupled 与主实验结果逐位相同，属于预期的不变性。
+
+## 2026-10-18：容量适应研究 pilot
+
+新增已知 CPU/RAM 的本地容量映射、独立容量实验运行器及可选 Matplotlib 绘图模块。Node / Simulator 的协议规则没有修改；实验调用现有不同 active 上限和 `set_active_size` 接口。研究设计见 [THESIS_PLAN_ZH.md](THESIS_PLAN_ZH.md)，实际结果见 [CAPACITY_PILOT_ZH.md](CAPACITY_PILOT_ZH.md)。
+
+- 86 项测试全部通过，其中 19 项新增测试验证资源瓶颈、取整 / 裁剪、局部适应、无全局发现、预算与资源交换、static/adaptive 相同初始快照、事件配对及故障广播不插入 tick。
+- 干净构建 wheel，包含三个新模块；不安装绘图依赖时，在项目目录之外通过全部 86 项测试和小规模容量 CLI。Python 系统环境与 bundled Python 均通过。
+- Matplotlib 声明为可选 `plots` 依赖，已同步 `uv.lock` 并通过离线锁文件一致性检查；协议仿真仍无第三方运行依赖。
+- 实际运行 N=120、种子 0–4、30 预热轮；保存 20 个动态运行和 120 个故障运行。故障覆盖 random / high-capacity、0/20/50/80%，20 次连续广播后再测 10 轮恢复。
+- 输出完整 JSON，包含每节点资源、上限、资源交换配对、联系人、故障名单、广播源与计数。导出 3 张 PNG 及 3 张可编辑 SVG，已视觉检查；图中误差为跨种子样本标准差，不是置信区间。
+- 所有方案故障前槽位预算均为 600；实际边数与故障后的幸存预算并不保证相同。容量映射是模型假设，未模拟 CPU 服务率、RAM 占用或真实吞吐。
+
+仅运行了上述 pilot；建议的 20 种子、多规模、非同比资源与 detector 敏感性主实验尚未运行。先前重实现验证记录保留如下。
+
 ## 2026-10-17：分离节点与模拟器，核对加入流程
 
 将 Node 和 Simulator 分别放入 `hyparview/node.py`、`hyparview/simulator.py`；连接与断连规则仍只在 Node 中实现。同步修复包内相对导入，并保持对外导入和命令行入口。

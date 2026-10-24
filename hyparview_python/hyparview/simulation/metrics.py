@@ -1,7 +1,7 @@
 """只读仿真指标：连通性、路径、聚类、视图准确率和消息统计。"""
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 import random
 from typing import TYPE_CHECKING
 
@@ -101,3 +101,104 @@ def collect_metrics(simulator: Simulator, *, path_samples: int | None = None,
         "deferred_repair_nodes": len(simulator._repair_deferred & simulator.alive),
     }
 
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 2:
+        return None
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    return sxy / (sxx * syy) ** 0.5 if sxx and syy else None
+
+
+def _ranks(values: list[float]) -> list[float]:
+    """Average ranks; ties share the mean of their positions."""
+    order = sorted(range(len(values)), key=values.__getitem__)
+    ranks = [0.0] * len(values)
+    start = 0
+    while start < len(order):
+        end = start
+        while end + 1 < len(order) and values[order[end + 1]] == values[order[start]]:
+            end += 1
+        for position in range(start, end + 1):
+            ranks[order[position]] = (start + end) / 2
+        start = end + 1
+    return ranks
+
+
+def _articulation_points_and_bridges(graph: dict[str, set[str]]):
+    """Iterative Tarjan DFS, so large overlays do not hit recursion limits."""
+    discovery: dict[str, int] = {}
+    low: dict[str, int] = {}
+    points: set[str] = set()
+    bridges = 0
+    for root in sorted(graph):
+        if root in discovery:
+            continue
+        discovery[root] = low[root] = len(discovery)
+        root_children = 0
+        stack = [(root, None, iter(sorted(graph[root])))]
+        while stack:
+            node, parent, peers = stack[-1]
+            advanced = False
+            for peer in peers:
+                if peer == parent:
+                    continue
+                if peer in discovery:
+                    low[node] = min(low[node], discovery[peer])
+                    continue
+                discovery[peer] = low[peer] = len(discovery)
+                stack.append((peer, node, iter(sorted(graph[peer]))))
+                advanced = True
+                break
+            if advanced:
+                continue
+            stack.pop()
+            if parent is None:
+                continue
+            low[parent] = min(low[parent], low[node])
+            if low[node] > discovery[parent]:
+                bridges += 1
+            if parent == root:
+                root_children += 1
+            elif low[node] >= discovery[parent]:
+                points.add(parent)
+        if root_children > 1:
+            points.add(root)
+    return points, bridges
+
+
+def graph_properties(graph: dict[str, set[str]],
+                     capacity: dict[str, float]) -> dict:
+    """Structural properties relating the live overlay to node capacity.
+
+    graph is Simulator.graph(); capacity maps each live node to its known
+    relative capacity score. Correlations are None when undefined (constant
+    input), never a fabricated zero. Articulation points and bridges are
+    single nodes / links whose removal disconnects their component.
+    """
+    nodes = sorted(graph)
+    degrees = [len(graph[i]) for i in nodes]
+    scores = [capacity[i] for i in nodes]
+    edges = [(i, j) for i in nodes for j in graph[i] if i < j]
+    # Newman degree assortativity: Pearson over both orientations of each edge.
+    ends_a = [len(graph[i]) for i, j in edges] + [len(graph[j]) for i, j in edges]
+    ends_b = [len(graph[j]) for i, j in edges] + [len(graph[i]) for i, j in edges]
+    mixing: Counter[str] = Counter()
+    for i, j in edges:
+        low_c, high_c = sorted((capacity[i], capacity[j]))
+        mixing[f"{low_c:g}-{high_c:g}"] += 1
+    points, bridges = _articulation_points_and_bridges(graph)
+    return {
+        "capacity_degree_pearson": _pearson(scores, degrees),
+        "capacity_degree_spearman": _pearson(_ranks(scores), _ranks(degrees)),
+        "degree_assortativity": _pearson(ends_a, ends_b),
+        "capacity_mixing_edge_fraction": {
+            key: count / len(edges) for key, count in sorted(mixing.items())} if edges else {},
+        "articulation_points": len(points),
+        "articulation_capacity_mean": (sum(capacity[i] for i in points) / len(points)
+                                       if points else None),
+        "bridges": bridges,
+    }
